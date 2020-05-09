@@ -1,0 +1,4 @@
+{
+    "mongoURI": "mongodb+srv://Tathagat:tathagat12@fitlife-social-mtfoh.mongodb.net/test?retryWrites=true&w=majority",
+    "jwtSecret": "mysecrettoken"
+}
