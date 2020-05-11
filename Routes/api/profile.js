@@ -1,7 +1,11 @@
 const express = require('express');
+const axios = require('axios');
+const config = require('config');
 const router = express.Router();
 const auth = require('../../Middleware/auth');
-const { check, validationResult } = require('express-validator/check');
+const { check, validationResult } = require('express-validator');
+const normalize = require('normalize-url');
+const checkObjectId = require('../../Middleware/checkObjectId');
 
 const Profile = require('../../models/Profile');
 const User = require('../../models/User');
@@ -43,6 +47,7 @@ router.post(
       website,
       location,
       bio,
+      skills,
       status,
       youtube,
       facebook,
@@ -51,43 +56,35 @@ router.post(
     } = req.body;
 
     //Build profile object
-    const profileFields = {};
-    profileFields.user = req.user.id;
-    if (website) profileFields.website = website;
-    if (location) profileFields.location = location;
-    if (bio) profileFields.bio = bio;
-    if (status) profileFields.status = status;
+    const profileFields = {
+      user: req.user.id,
+      location,
+      website: website === '' ? '' : normalize(website, { forceHttps: true }),
+      bio,
+      skills: Array.isArray(skills)
+        ? skills
+        : skills.split(',').map((skill) => ' ' + skill.trim()),
+      status,
+    };
 
     //Build social array
-    profileFields.social = {};
-    if (youtube) profileFields.social.youtube = youtube;
-    if (twitter) profileFields.social.twitter = twitter;
-    if (facebook) profileFields.social.facebook = facebook;
-    if (instagram) profileFields.social.instagram = instagram;
+    const socialfields = { youtube, twitter, instagram, facebook };
+
+    for (const [key, value] of Object.entries(socialfields)) {
+      if (value && value.length > 0)
+        socialfields[key] = normalize(value, { forceHttps: true });
+    }
+    profileFields.social = socialfields;
+
     try {
-      let profile = Profile.findOne({
-        user: req.user.id,
-      });
-      if (profile) {
-        //update
-        profile = await Profile.findOneAndUpdate(
-          {
-            user: req.user.id,
-          },
-          {
-            $set: profileFields,
-          },
-          {
-            new: true,
-          }
-        );
-        return res.json(profile);
-      }
-      //Create
-      profile = new Profile(profileFields);
-      await profile.save();
+      //using upsert option
+      let profile = await Profile.findOneAndUpdate(
+        { user: req.user.id },
+        { $set: profileFields },
+        { new: true, upsert: true }
+      );
       res.json(profile);
-    } catch (err) {
+    } catch (ere) {
       console.error(err.message);
       res.status(500).send('Server Error');
     }
@@ -109,26 +106,30 @@ router.get('/', async (req, res) => {
 // @route   GET api/profile/user/:user_id
 // @desc    Get Profile by user ID
 // @access  Public
-router.get('/user/:user_id', async (req, res) => {
-  try {
-    const profile = await Profile.findOne({
-      user: req.params.user_id,
-    }).populate('user', ['name', 'avatar']);
-    if (!profile)
-      return res.status(400).json({
-        msg: 'Profile not found',
-      });
-    res.json(profiles);
-  } catch (err) {
-    console.error(err.message);
-    if (err.kind == 'ObjectID') {
-      return res.status(400).json({
-        msg: 'Profile not found',
-      });
+router.get(
+  '/user/:user_id',
+  checkObjectId('user_id'),
+  async ({ params: { user_id } }, res) => {
+    try {
+      const profile = await Profile.findOne({
+        user: req.params.user_id,
+      }).populate('user', ['name', 'avatar']);
+      if (!profile)
+        return res.status(400).json({
+          msg: 'Profile not found',
+        });
+      return res.json(profile);
+    } catch (err) {
+      console.error(err.message);
+      if (err.kind == 'ObjectID') {
+        return res.status(400).json({
+          msg: 'Profile not found',
+        });
+      }
+      return res.status(500).send('Server Error');
     }
-    res.status(500).send('Server Error');
   }
-});
+);
 // @route   Delete api/profile
 // @desc    Delete Profile , user &posts
 // @access  Private
@@ -172,9 +173,10 @@ router.put(
         errors: errors.array(),
       });
     }
-    const { title, description } = req.body;
+    const { title, location, description } = req.body;
     const newExp = {
       title,
+      location,
       description,
     };
     try {
@@ -196,16 +198,16 @@ router.put(
 // @access  Private
 router.delete('/experience/:exp_id', auth, async (req, res) => {
   try {
-    const profile = await Profile.findOne({
+    const foundprofile = await Profile.findOne({
       user: req.user.id,
     });
-    //Get remove inde
-    const removeIndex = profile.experience
-      .map((item) => item.id)
-      .indexof(req.params.exp_id);
-    profile.experience.splice(removeIndex, 1);
-    await profile.save();
-    res.json(profile);
+
+    foundprofile.experience = foundprofile.experience.filter(
+      (exp) => exp._id.toString() !== req.params.exp_id
+    );
+
+    await foundprofile.save();
+    return res.status(200).json(foundprofile);
   } catch (err) {
     console.error(err.message);
     res.status(500).send('Server Eror');
